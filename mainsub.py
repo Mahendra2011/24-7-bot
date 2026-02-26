@@ -22,9 +22,6 @@ import qrcode
 import io
 import random
 import string
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 
 # --- Flask Keep Alive ---
 from flask import Flask
@@ -48,33 +45,30 @@ def keep_alive():
 # --- End Flask Keep Alive ---
 
 # --- Configuration ---
-TOKEN = '8738782439:AAEd_MPUuQ7qhd887UN1W4UFderR2rnUYV8'
+TOKEN = '8524718153:AAFpybWb7nw8WNrxLOtY5d8Mb4L5ze3rdRw'
 OWNER_ID = 7855338525
 ADMIN_ID = 7855338525
 YOUR_USERNAME = '@Deleted0Account'
 UPDATE_CHANNEL = 'https://t.me/+ThhtU6Jx0MI2ZGRl'
 
-# Email Configuration (Gmail with app password)
-EMAIL_ADDRESS = 'advancehostingTG@gmail.com'          # Replace with your Gmail
-EMAIL_PASSWORD = 'arpm lnne pyxb zxzw'                # Fixed: removed invisible character
-SMTP_SERVER = 'smtp.gmail.com'
-SMTP_PORT = 587
+# Email Configuration
+ADMIN_EMAIL = 'Info@getfreehosting.online'
 
 # Payment Configuration
 PAYMENT_CONFIG_FILE = 'payment_config.json'
 DEFAULT_PAYMENT_CONFIG = {
     'upi_id': 'robintyagi@fam',
     'qr_code_enabled': True,
-    'subscription_price_30_days': 299,
-    'subscription_price_90_days': 799,
-    'subscription_price_180_days': 1499
+    'subscription_price_30_days': 50,
+    'subscription_price_90_days': 120,
+    'subscription_price_180_days': 220
 }
 
 # Subscription Plans
 SUBSCRIPTION_PLANS = {
-    '30': {'days': 30, 'price': 299, 'name': '30 Days'},
-    '90': {'days': 90, 'price': 799, 'name': '90 Days'},
-    '180': {'days': 180, 'price': 1499, 'name': '180 Days'}
+    '30': {'days': 30, 'price': 50, 'name': '30 Days'},
+    '90': {'days': 90, 'price': 120, 'name': '90 Days'},
+    '180': {'days': 180, 'price': 220, 'name': '180 Days'}
 }
 
 # Inline Button Links Configuration
@@ -120,8 +114,7 @@ active_users = set()
 admin_ids = {ADMIN_ID, OWNER_ID}
 banned_users = set()
 bot_locked = False
-pending_requests = {}  # Store pending subscription requests (status='pending')
-code_sent_requests = {}  # Store requests with code sent (status='code_sent')
+pending_requests = {}  # Store pending subscription requests
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO,
@@ -228,7 +221,7 @@ def init_db():
                       problem_text TEXT, status TEXT DEFAULT 'pending',
                       created_at TEXT, resolved_at TEXT)''')
         
-        # New table for subscription requests (status: pending, code_sent, approved, rejected)
+        # New table for subscription requests
         c.execute('''CREATE TABLE IF NOT EXISTS subscription_requests
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
                       user_id INTEGER, user_name TEXT, user_email TEXT,
@@ -285,7 +278,7 @@ def load_data():
         c.execute('SELECT user_id FROM banned_users')
         banned_users.update(user_id for (user_id,) in c.fetchall())
 
-        # Load pending subscription requests (status='pending')
+        # Load pending subscription requests
         c.execute('''SELECT id, user_id, user_name, user_email, plan_days, amount, 
                     utr_number, screenshot_file_id, created_at 
                     FROM subscription_requests WHERE status = 'pending' ''')
@@ -303,66 +296,16 @@ def load_data():
                 'created_at': created
             }
 
-        # Load code-sent requests (status='code_sent') for redemption
-        c.execute('''SELECT id, user_id, user_email, plan_days, activation_code
-                    FROM subscription_requests WHERE status = 'code_sent' ''')
-        for row in c.fetchall():
-            req_id, user_id, email, days, code = row
-            code_sent_requests[code] = {
-                'id': req_id,
-                'user_id': user_id,
-                'email': email,
-                'days': days
-            }
-
         conn.close()
         logger.info(f"Data loaded: {len(active_users)} users, {len(user_subscriptions)} subscriptions, "
                    f"{len(admin_ids)} admins, {len(banned_users)} banned users, "
-                   f"{len(pending_requests)} pending requests, {len(code_sent_requests)} codes sent.")
+                   f"{len(pending_requests)} pending requests.")
     except Exception as e:
         logger.error(f"❌ Error loading data: {e}", exc_info=True)
 
 # Initialize DB and Load Data at startup
 init_db()
 load_data()
-
-# --- Email Sending Function (FIXED) ---
-def send_activation_email(to_email, activation_code):
-    """Send activation code via email using Gmail SMTP"""
-    try:
-        msg = MIMEMultipart()
-        msg['From'] = EMAIL_ADDRESS
-        msg['To'] = to_email
-        msg['Subject'] = "Your Subscription Activation Code"
-
-        body = f"""
-        Hello,
-
-        Thank you for your payment. Your subscription request has been approved.
-
-        Your activation code is: {activation_code}
-
-        To activate your subscription, please send the following command to the bot:
-        /redeem {activation_code}
-
-        If you did not request this, please ignore this email.
-
-        Regards,
-        Support Team
-        """
-        # Explicitly set UTF-8 encoding to handle any non-ASCII characters
-        msg.attach(MIMEText(body, 'plain', 'utf-8'))
-
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
-        server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-        server.send_message(msg)
-        server.quit()
-        logger.info(f"Activation email sent to {to_email}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to send email to {to_email}: {e}")
-        return False
 
 # --- Helper Functions ---
 def generate_activation_code():
@@ -447,18 +390,17 @@ def save_subscription_request(user_id, user_name, email, days, amount, utr, scre
         return None
 
 def approve_subscription_request(request_id, admin_id):
-    """Approve subscription request: generate code, send email, update status to 'code_sent'"""
+    """Approve subscription request and generate activation code"""
     try:
         conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
         c = conn.cursor()
         
-        # Get request details (ensure it's still pending)
+        # Get request details
         c.execute('''SELECT user_id, user_email, plan_days FROM subscription_requests 
                     WHERE id = ? AND status = 'pending' ''', (request_id,))
         result = c.fetchone()
         
         if not result:
-            logger.warning(f"Request {request_id} not found or not pending.")
             conn.close()
             return None, None, None
         
@@ -468,57 +410,11 @@ def approve_subscription_request(request_id, admin_id):
         activation_code = generate_activation_code()
         reviewed_at = datetime.now().isoformat()
         
-        # Update request status to 'code_sent' and store code
+        # Update request status
         c.execute('''UPDATE subscription_requests 
-                    SET status = 'code_sent', reviewed_at = ?, reviewed_by = ?, activation_code = ?
+                    SET status = 'approved', reviewed_at = ?, reviewed_by = ?, activation_code = ?
                     WHERE id = ?''',
                   (reviewed_at, admin_id, activation_code, request_id))
-        
-        conn.commit()
-        conn.close()
-        
-        # Update in-memory caches
-        if request_id in pending_requests:
-            del pending_requests[request_id]
-        
-        code_sent_requests[activation_code] = {
-            'id': request_id,
-            'user_id': user_id,
-            'email': email,
-            'days': days
-        }
-        
-        logger.info(f"Request {request_id} approved, code {activation_code} generated for user {user_id}")
-        return activation_code, email, user_id
-        
-    except Exception as e:
-        logger.error(f"Error approving subscription request {request_id}: {e}", exc_info=True)
-        return None, None, None
-
-def redeem_code(user_id, code):
-    """Redeem activation code and activate subscription"""
-    code = code.strip().upper()
-    if code not in code_sent_requests:
-        return False, "Invalid or expired code."
-    
-    req_info = code_sent_requests[code]
-    if req_info['user_id'] != user_id:
-        return False, "This code belongs to another user."
-    
-    try:
-        conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
-        c = conn.cursor()
-        
-        # Verify the request is still in 'code_sent' status
-        c.execute('''SELECT id, user_id, plan_days FROM subscription_requests 
-                    WHERE id = ? AND status = 'code_sent' AND activation_code = ?''',
-                  (req_info['id'], code))
-        result = c.fetchone()
-        if not result:
-            conn.close()
-            return False, "Code already used or invalid."
-        
-        req_id, user_id_db, days = result
         
         # Calculate expiry date
         current_expiry = user_subscriptions.get(user_id, {}).get('expiry')
@@ -527,17 +423,10 @@ def redeem_code(user_id, code):
             start_date = current_expiry
         expiry_date = start_date + timedelta(days=int(days))
         
-        # Update request status to 'approved'
-        reviewed_at = datetime.now().isoformat()
-        c.execute('''UPDATE subscription_requests 
-                    SET status = 'approved', reviewed_at = ?
-                    WHERE id = ?''',
-                  (reviewed_at, req_id))
-        
         # Save subscription
         c.execute('''INSERT OR REPLACE INTO subscriptions (user_id, expiry, subscription_code, activated_at)
                     VALUES (?, ?, ?, ?)''',
-                  (user_id, expiry_date.isoformat(), code, reviewed_at))
+                  (user_id, expiry_date.isoformat(), activation_code, reviewed_at))
         
         conn.commit()
         conn.close()
@@ -545,17 +434,18 @@ def redeem_code(user_id, code):
         # Update memory
         user_subscriptions[user_id] = {
             'expiry': expiry_date,
-            'code': code
+            'code': activation_code
         }
         
-        # Remove from code_sent cache
-        del code_sent_requests[code]
+        # Remove from pending requests
+        if request_id in pending_requests:
+            del pending_requests[request_id]
         
-        logger.info(f"User {user_id} redeemed code {code}, subscription active until {expiry_date}")
-        return True, expiry_date
+        return activation_code, email, user_id
+        
     except Exception as e:
-        logger.error(f"Error redeeming code {code} for user {user_id}: {e}", exc_info=True)
-        return False, "An error occurred. Please try again later."
+        logger.error(f"Error approving subscription request {request_id}: {e}")
+        return None, None, None
 
 def reject_subscription_request(request_id, admin_id, reason=""):
     """Reject subscription request"""
@@ -571,20 +461,15 @@ def reject_subscription_request(request_id, admin_id, reason=""):
                   (reviewed_at, admin_id, request_id))
         
         conn.commit()
-        rows_affected = c.rowcount
         conn.close()
         
-        if rows_affected > 0:
-            # Remove from pending requests cache
-            if request_id in pending_requests:
-                del pending_requests[request_id]
-            logger.info(f"Request {request_id} rejected by admin {admin_id}. Reason: {reason}")
-            return True
-        else:
-            logger.warning(f"Request {request_id} not found or already processed.")
-            return False
+        # Remove from pending requests
+        if request_id in pending_requests:
+            del pending_requests[request_id]
+        
+        return True
     except Exception as e:
-        logger.error(f"Error rejecting subscription request {request_id}: {e}", exc_info=True)
+        logger.error(f"Error rejecting subscription request {request_id}: {e}")
         return False
 
 def get_pending_requests():
@@ -1349,6 +1234,22 @@ def create_subscription_request_menu():
     )
     return markup
 
+def create_requests_management_menu():
+    """Create menu for managing subscription requests"""
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.row(
+        types.InlineKeyboardButton('📋 View Pending', callback_data='view_requests'),
+        types.InlineKeyboardButton('✅ Approve', callback_data='approve_request')
+    )
+    markup.row(
+        types.InlineKeyboardButton('❌ Reject', callback_data='reject_request'),
+        types.InlineKeyboardButton('📊 Statistics', callback_data='request_stats')
+    )
+    markup.row(
+        types.InlineKeyboardButton('🔙 Back to Admin', callback_data='admin_panel')
+    )
+    return markup
+
 def create_admin_panel():
     """Create admin panel menu"""
     markup = types.InlineKeyboardMarkup(row_width=2)
@@ -1804,7 +1705,7 @@ BUTTON_TEXT_TO_LOGIC = {
     "📊 Statistics": _logic_statistics,
     "💳 Get Subscription": _logic_get_subscription,
     "💳 My Subscription": _logic_my_subscription,
-    "💳 Subscription Requests": _logic_view_requests,
+    "💳 Subscription Requests": _logic_view_requests,  # Fixed: uses proper handler
     "📢 Broadcast": _logic_broadcast_init,
     "🔒 Lock Bot": _logic_toggle_lock_bot,
     "🟢 Running All Code": _logic_run_all_scripts,
@@ -1817,6 +1718,21 @@ BUTTON_TEXT_TO_LOGIC = {
 }
 
 # Button wrapper functions
+def buy_subscription_button(message):
+    """Wrapper for buy subscription button"""
+    if is_user_banned(message.from_user.id):
+        bot.reply_to(message, "🚫 You are banned from using this bot.")
+        return
+    upi_id = payment_config.get('upi_id', 'yourupi@bank')
+    response = (f"💳 Buy Subscription\n\n"
+                f"📱 UPI ID: `{upi_id}`\n\n"
+                f"Select plan:\n"
+                f"• 30 Days - ₹{payment_config.get('subscription_price_30_days', 299)}\n"
+                f"• 90 Days - ₹{payment_config.get('subscription_price_90_days', 799)}\n"
+                f"• 180 Days - ₹{payment_config.get('subscription_price_180_days', 1499)}\n\n"
+                f"After payment, send screenshot to @{YOUR_USERNAME.replace('@', '')}")
+    bot.send_message(message.chat.id, response, reply_markup=create_payment_menu(), parse_mode='Markdown')
+
 def submit_problem_button(message):
     """Wrapper for submit problem button"""
     if is_user_banned(message.from_user.id):
@@ -1922,31 +1838,6 @@ def command_my_subscription(message):
 def command_get_subscription(message):
     """Get subscription"""
     _logic_get_subscription(message)
-
-@bot.message_handler(commands=['redeem'])
-def command_redeem(message):
-    """Redeem activation code"""
-    user_id = message.from_user.id
-    parts = message.text.split()
-    if len(parts) != 2:
-        bot.reply_to(message, "❌ Usage: /redeem <activation_code>")
-        return
-    
-    code = parts[1].strip().upper()
-    
-    if is_user_subscribed(user_id):
-        bot.reply_to(message, "✅ You already have an active subscription.")
-        return
-    
-    success, result = redeem_code(user_id, code)
-    if success:
-        expiry = result
-        bot.reply_to(message, 
-                    f"✅ Subscription activated successfully!\n"
-                    f"⏳ Expires on: {expiry.strftime('%Y-%m-%d')}\n"
-                    f"📁 You can now upload files.")
-    else:
-        bot.reply_to(message, f"❌ {result}")
 
 @bot.message_handler(commands=['updateschannel'])
 def command_updates_channel(message): 
@@ -2342,8 +2233,9 @@ def process_utr_number(message):
         bot.reply_to(message,
                     f"✅ Subscription request #{request_id} submitted successfully!\n\n"
                     f"Your request is pending admin approval.\n"
-                    f"You will receive an email with the activation code once approved.\n"
-                    f"Then use /redeem <code> to activate your subscription.")
+                    f"You will be notified once your payment is verified.\n"
+                    f"Please check your email ({email}) for the activation code after approval.\n"
+                    f"Also check your spam folder if you don't see the email.")
     else:
         bot.reply_to(message, "❌ Failed to submit request. Please try again.")
     
@@ -2420,7 +2312,7 @@ def view_screenshot_callback(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('approve_'))
 def approve_request_callback(call):
-    """Approve subscription request: generate code, send email"""
+    """Approve subscription request"""
     if call.from_user.id not in admin_ids:
         bot.answer_callback_query(call.id, "⚠️ Admin permissions required.", show_alert=True)
         return
@@ -2432,41 +2324,40 @@ def approve_request_callback(call):
         code, email, user_id = approve_subscription_request(req_id, call.from_user.id)
         
         if code and email and user_id:
-            # Send activation email
-            if send_activation_email(email, code):
-                # Notify admin that email was sent
-                bot.answer_callback_query(call.id, f"✅ Request #{req_id} approved! Email sent.", show_alert=True)
-                bot.send_message(call.message.chat.id,
-                               f"✅ Request #{req_id} approved.\n"
-                               f"Activation code `{code}` sent to {email}.")
-                
-                # Notify user via Telegram (optional)
-                try:
-                    bot.send_message(user_id,
-                                   f"✅ Your payment has been verified!\n\n"
-                                   f"An activation code has been sent to your email: {email}\n"
-                                   f"Please check your inbox (and spam folder).\n"
-                                   f"Then use /redeem <code> to activate your subscription.")
-                except:
-                    pass
-            else:
-                bot.answer_callback_query(call.id, f"⚠️ Code generated but email failed. Code: {code}", show_alert=True)
-                bot.send_message(call.message.chat.id,
-                               f"⚠️ Request #{req_id} approved but email failed.\n"
-                               f"Activation code: `{code}`\n"
-                               f"Please send it manually to {email}.")
+            # Notify user
+            user_notification = (f"✅ Your payment has been verified!\n\n"
+                               f"Your subscription is now active.\n"
+                               f"Please check your email inbox (and spam folder) for the activation code.\n"
+                               f"📧 Email: {email}\n\n"
+                               f"If you don't receive the email within 10 minutes, contact admin.")
+            
+            try:
+                bot.send_message(user_id, user_notification)
+            except Exception as e:
+                logger.error(f"Failed to notify user {user_id}: {e}")
+            
+            # Send code to admin (to be emailed manually)
+            admin_message = (f"✅ Subscription Approved!\n\n"
+                           f"Request ID: {req_id}\n"
+                           f"User ID: {user_id}\n"
+                           f"Email: {email}\n"
+                           f"Activation Code: `{code}`\n\n"
+                           f"Please email this code to the user from:\n"
+                           f"{ADMIN_EMAIL}")
+            
+            bot.answer_callback_query(call.id, f"✅ Request #{req_id} approved!", show_alert=True)
+            bot.send_message(call.message.chat.id, admin_message, parse_mode='Markdown')
             
             # Update the request message
-            bot.edit_message_text(f"✅ Request #{req_id} has been approved and email sent.",
+            bot.edit_message_text(f"✅ Request #{req_id} has been approved!",
                                  call.message.chat.id,
                                  call.message.message_id)
         else:
-            bot.answer_callback_query(call.id, "❌ Failed to approve request. Check logs.", show_alert=True)
-            logger.error(f"Approval failed for request {req_id} - returned None.")
+            bot.answer_callback_query(call.id, "❌ Failed to approve request.", show_alert=True)
             
     except Exception as e:
-        logger.error(f"Error approving request: {e}", exc_info=True)
-        bot.answer_callback_query(call.id, f"❌ Error: {str(e)[:50]}", show_alert=True)
+        logger.error(f"Error approving request: {e}")
+        bot.answer_callback_query(call.id, "❌ Error approving request.", show_alert=True)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('reject_'))
 def reject_request_callback(call):
@@ -2485,7 +2376,7 @@ def reject_request_callback(call):
         bot.register_next_step_handler(msg, process_rejection_reason, req_id, call)
         
     except Exception as e:
-        logger.error(f"Error in reject callback: {e}", exc_info=True)
+        logger.error(f"Error in reject callback: {e}")
         bot.answer_callback_query(call.id, "❌ Error.", show_alert=True)
 
 def process_rejection_reason(message, req_id, original_call):
@@ -2521,9 +2412,1138 @@ def process_rejection_reason(message, req_id, original_call):
                             original_call.message.chat.id,
                             original_call.message.message_id)
     else:
-        bot.reply_to(message, f"❌ Failed to reject request #{req_id}. It may have been already processed.")
+        bot.reply_to(message, f"❌ Failed to reject request #{req_id}.")
 
-# ... (include all other callback handlers from the original code, such as upload, check_files, file control, etc.) ...
+@bot.callback_query_handler(func=lambda call: call.data == 'upload')
+def upload_callback(call):
+    if is_user_banned(call.from_user.id):
+        bot.answer_callback_query(call.id, "❌ You are banned from using this bot.", show_alert=True)
+        return
+
+    user_id = call.from_user.id
+    file_limit = get_user_file_limit(user_id)
+    current_files = get_user_file_count(user_id)
+    if current_files >= file_limit:
+        limit_str = str(file_limit) if file_limit != float('inf') else "Unlimited"
+        bot.answer_callback_query(call.id, f"⚠️ File limit ({current_files}/{limit_str}) reached.", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    bot.send_message(call.message.chat.id, "📤 Send your Python (`.py`), JS (`.js`), or ZIP (`.zip`) file.")
+
+@bot.callback_query_handler(func=lambda call: call.data == 'check_files')
+def check_files_callback(call):
+    user_id = call.from_user.id
+    user_files_list = user_files.get(user_id, [])
+    if not user_files_list:
+        bot.answer_callback_query(call.id, "⚠️ No files uploaded.", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    for file_name, file_type in sorted(user_files_list):
+        is_running = is_bot_running(user_id, file_name)
+        status_icon = "🟢 Running" if is_running else "🔴 Stopped"
+        btn_text = f"{file_name} ({file_type}) - {status_icon}"
+        markup.add(types.InlineKeyboardButton(btn_text, callback_data=f'file_{user_id}_{file_name}'))
+    markup.add(types.InlineKeyboardButton("🔙 Back to Main", callback_data='back_to_main'))
+    bot.edit_message_text("📂 Your files:\nClick to manage.", call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode='Markdown')
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('file_'))
+def file_control_callback(call):
+    try:
+        _, script_owner_id_str, file_name = call.data.split('_', 2)
+        script_owner_id = int(script_owner_id_str)
+        requesting_user_id = call.from_user.id
+
+        # Allow owner/admin to control any file, or user to control their own
+        if not (requesting_user_id == script_owner_id or requesting_user_id in admin_ids):
+            bot.answer_callback_query(call.id, "⚠️ You can only manage your own files.", show_alert=True)
+            return
+
+        user_files_list = user_files.get(script_owner_id, [])
+        if not any(f[0] == file_name for f in user_files_list):
+            bot.answer_callback_query(call.id, "⚠️ File not found.", show_alert=True)
+            return
+
+        bot.answer_callback_query(call.id)
+        is_running = is_bot_running(script_owner_id, file_name)
+        status_text = '🟢 Running' if is_running else '🔴 Stopped'
+        file_type = next((f[1] for f in user_files_list if f[0] == file_name), '?')
+        bot.edit_message_text(
+            f"⚙️ Controls for: `{file_name}` ({file_type})\nStatus: {status_text}",
+            call.message.chat.id, call.message.message_id,
+            reply_markup=create_control_buttons(script_owner_id, file_name, is_running),
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        logger.error(f"Error in file_control_callback: {e}")
+        bot.answer_callback_query(call.id, "Error processing request.")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('start_'))
+def start_bot_callback(call):
+    try:
+        _, script_owner_id_str, file_name = call.data.split('_', 2)
+        script_owner_id = int(script_owner_id_str)
+        requesting_user_id = call.from_user.id
+
+        if not (requesting_user_id == script_owner_id or requesting_user_id in admin_ids):
+            bot.answer_callback_query(call.id, "⚠️ Permission denied.", show_alert=True)
+            return
+
+        user_files_list = user_files.get(script_owner_id, [])
+        file_info = next((f for f in user_files_list if f[0] == file_name), None)
+        if not file_info:
+            bot.answer_callback_query(call.id, "⚠️ File not found.", show_alert=True)
+            return
+
+        file_type = file_info[1]
+        user_folder = get_user_folder(script_owner_id)
+        file_path = os.path.join(user_folder, file_name)
+
+        if not os.path.exists(file_path):
+            bot.answer_callback_query(call.id, f"⚠️ Error: File `{file_name}` missing!", show_alert=True)
+            remove_user_file_db(script_owner_id, file_name)
+            return
+
+        if is_bot_running(script_owner_id, file_name):
+            bot.answer_callback_query(call.id, f"⚠️ Script already running.", show_alert=True)
+            return
+
+        bot.answer_callback_query(call.id, f"⏳ Starting {file_name}...")
+
+        if file_type == 'py':
+            threading.Thread(target=run_script, args=(file_path, script_owner_id, user_folder, file_name, call.message)).start()
+        elif file_type == 'js':
+            threading.Thread(target=run_js_script, args=(file_path, script_owner_id, user_folder, file_name, call.message)).start()
+
+        time.sleep(1)
+        is_now_running = is_bot_running(script_owner_id, file_name)
+        status_text = '🟢 Running' if is_now_running else '🟡 Starting'
+        # Avoid "message not modified" error
+        new_text = f"⚙️ Controls for: `{file_name}` ({file_type})\nStatus: {status_text}"
+        if call.message.text != new_text:
+            bot.edit_message_text(
+                new_text,
+                call.message.chat.id, call.message.message_id,
+                reply_markup=create_control_buttons(script_owner_id, file_name, is_now_running),
+                parse_mode='Markdown'
+            )
+        else:
+            bot.answer_callback_query(call.id, "Script started.")
+    except Exception as e:
+        logger.error(f"Error in start_bot_callback: {e}")
+        bot.answer_callback_query(call.id, "Error starting script.")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('stop_'))
+def stop_bot_callback(call):
+    try:
+        _, script_owner_id_str, file_name = call.data.split('_', 2)
+        script_owner_id = int(script_owner_id_str)
+        requesting_user_id = call.from_user.id
+
+        if not (requesting_user_id == script_owner_id or requesting_user_id in admin_ids):
+            bot.answer_callback_query(call.id, "⚠️ Permission denied.", show_alert=True)
+            return
+
+        user_files_list = user_files.get(script_owner_id, [])
+        file_info = next((f for f in user_files_list if f[0] == file_name), None)
+        if not file_info:
+            bot.answer_callback_query(call.id, "⚠️ File not found.", show_alert=True)
+            return
+
+        file_type = file_info[1]
+        script_key = f"{script_owner_id}_{file_name}"
+
+        if not is_bot_running(script_owner_id, file_name):
+            bot.answer_callback_query(call.id, f"⚠️ Script already stopped.", show_alert=True)
+            return
+
+        bot.answer_callback_query(call.id, f"⏳ Stopping {file_name}...")
+        process_info = bot_scripts.get(script_key)
+        if process_info:
+            kill_process_tree(process_info)
+            if script_key in bot_scripts:
+                del bot_scripts[script_key]
+
+        new_text = f"⚙️ Controls for: `{file_name}` ({file_type})\nStatus: 🔴 Stopped"
+        if call.message.text != new_text:
+            bot.edit_message_text(
+                new_text,
+                call.message.chat.id, call.message.message_id,
+                reply_markup=create_control_buttons(script_owner_id, file_name, False),
+                parse_mode='Markdown'
+            )
+        else:
+            bot.answer_callback_query(call.id, "Script stopped.")
+    except Exception as e:
+        logger.error(f"Error in stop_bot_callback: {e}")
+        bot.answer_callback_query(call.id, "Error stopping script.")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('restart_'))
+def restart_bot_callback(call):
+    try:
+        _, script_owner_id_str, file_name = call.data.split('_', 2)
+        script_owner_id = int(script_owner_id_str)
+        requesting_user_id = call.from_user.id
+
+        if not (requesting_user_id == script_owner_id or requesting_user_id in admin_ids):
+            bot.answer_callback_query(call.id, "⚠️ Permission denied.", show_alert=True)
+            return
+
+        user_files_list = user_files.get(script_owner_id, [])
+        file_info = next((f for f in user_files_list if f[0] == file_name), None)
+        if not file_info:
+            bot.answer_callback_query(call.id, "⚠️ File not found.", show_alert=True)
+            return
+
+        file_type = file_info[1]
+        user_folder = get_user_folder(script_owner_id)
+        file_path = os.path.join(user_folder, file_name)
+        script_key = f"{script_owner_id}_{file_name}"
+
+        if not os.path.exists(file_path):
+            bot.answer_callback_query(call.id, f"⚠️ Error: File missing!", show_alert=True)
+            remove_user_file_db(script_owner_id, file_name)
+            return
+
+        bot.answer_callback_query(call.id, f"⏳ Restarting {file_name}...")
+
+        # Stop if running
+        if is_bot_running(script_owner_id, file_name):
+            process_info = bot_scripts.get(script_key)
+            if process_info:
+                kill_process_tree(process_info)
+            if script_key in bot_scripts:
+                del bot_scripts[script_key]
+            time.sleep(1)
+
+        # Start again
+        if file_type == 'py':
+            threading.Thread(target=run_script, args=(file_path, script_owner_id, user_folder, file_name, call.message)).start()
+        elif file_type == 'js':
+            threading.Thread(target=run_js_script, args=(file_path, script_owner_id, user_folder, file_name, call.message)).start()
+
+        time.sleep(1)
+        is_now_running = is_bot_running(script_owner_id, file_name)
+        status_text = '🟢 Running' if is_now_running else '🟡 Starting'
+        new_text = f"⚙️ Controls for: `{file_name}` ({file_type})\nStatus: {status_text}"
+        if call.message.text != new_text:
+            bot.edit_message_text(
+                new_text,
+                call.message.chat.id, call.message.message_id,
+                reply_markup=create_control_buttons(script_owner_id, file_name, is_now_running),
+                parse_mode='Markdown'
+            )
+        else:
+            bot.answer_callback_query(call.id, "Script restarted.")
+    except Exception as e:
+        logger.error(f"Error in restart_bot_callback: {e}")
+        bot.answer_callback_query(call.id, "Error restarting script.")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('delete_'))
+def delete_bot_callback(call):
+    try:
+        _, script_owner_id_str, file_name = call.data.split('_', 2)
+        script_owner_id = int(script_owner_id_str)
+        requesting_user_id = call.from_user.id
+
+        if not (requesting_user_id == script_owner_id or requesting_user_id in admin_ids):
+            bot.answer_callback_query(call.id, "⚠️ Permission denied.", show_alert=True)
+            return
+
+        user_files_list = user_files.get(script_owner_id, [])
+        if not any(f[0] == file_name for f in user_files_list):
+            bot.answer_callback_query(call.id, "⚠️ File not found.", show_alert=True)
+            return
+
+        bot.answer_callback_query(call.id, f"🗑️ Deleting {file_name}...")
+        script_key = f"{script_owner_id}_{file_name}"
+
+        # Stop if running
+        if is_bot_running(script_owner_id, file_name):
+            process_info = bot_scripts.get(script_key)
+            if process_info:
+                kill_process_tree(process_info)
+            if script_key in bot_scripts:
+                del bot_scripts[script_key]
+
+        # Delete files
+        user_folder = get_user_folder(script_owner_id)
+        file_path = os.path.join(user_folder, file_name)
+        log_path = os.path.join(user_folder, f"{os.path.splitext(file_name)[0]}.log")
+
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        if os.path.exists(log_path):
+            os.remove(log_path)
+
+        # Remove from database
+        remove_user_file_db(script_owner_id, file_name)
+
+        bot.edit_message_text(
+            f"🗑️ File `{file_name}` deleted!",
+            call.message.chat.id, call.message.message_id
+        )
+    except Exception as e:
+        logger.error(f"Error in delete_bot_callback: {e}")
+        bot.answer_callback_query(call.id, "Error deleting file.")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('logs_'))
+def logs_bot_callback(call):
+    try:
+        _, script_owner_id_str, file_name = call.data.split('_', 2)
+        script_owner_id = int(script_owner_id_str)
+        requesting_user_id = call.from_user.id
+
+        if not (requesting_user_id == script_owner_id or requesting_user_id in admin_ids):
+            bot.answer_callback_query(call.id, "⚠️ Permission denied.", show_alert=True)
+            return
+
+        user_files_list = user_files.get(script_owner_id, [])
+        if not any(f[0] == file_name for f in user_files_list):
+            bot.answer_callback_query(call.id, "⚠️ File not found.", show_alert=True)
+            return
+
+        user_folder = get_user_folder(script_owner_id)
+        log_path = os.path.join(user_folder, f"{os.path.splitext(file_name)[0]}.log")
+
+        if not os.path.exists(log_path):
+            bot.answer_callback_query(call.id, f"⚠️ No logs for '{file_name}'.", show_alert=True)
+            return
+
+        bot.answer_callback_query(call.id)
+        try:
+            with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                log_content = f.read()
+
+            if len(log_content) > 4000:
+                log_content = log_content[-4000:]
+                log_content = "...\n" + log_content
+
+            bot.send_message(call.message.chat.id,
+                           f"📜 Logs for `{file_name}`:\n```\n{log_content}\n```",
+                           parse_mode='Markdown')
+        except Exception as e:
+            bot.send_message(call.message.chat.id, f"❌ Error reading log: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error in logs_bot_callback: {e}")
+        bot.answer_callback_query(call.id, "Error fetching logs.")
+
+@bot.callback_query_handler(func=lambda call: call.data == 'speed')
+def speed_callback(call):
+    user_id = call.from_user.id
+    chat_id = call.message.chat.id
+    start_cb_ping_time = time.time()
+    try:
+        bot.edit_message_text("🏃 Testing speed...", chat_id, call.message.message_id)
+        bot.send_chat_action(chat_id, 'typing')
+        response_time = round((time.time() - start_cb_ping_time) * 1000, 2)
+        status = "🔓 Unlocked" if not bot_locked else "🔒 Locked"
+        if user_id == OWNER_ID:
+            user_level = "👑 Owner"
+        elif user_id in admin_ids:
+            user_level = "🛡️ Admin"
+        elif is_user_subscribed(user_id):
+            user_level = "⭐ Premium"
+        else:
+            user_level = "🆓 Free User"
+        speed_msg = (f"⚡ Bot Speed & Status:\n\n⏱️ API Response Time: {response_time} ms\n"
+                     f"🚦 Bot Status: {status}\n"
+                     f"👤 Your Level: {user_level}")
+        bot.answer_callback_query(call.id)
+        bot.edit_message_text(speed_msg, chat_id, call.message.message_id, reply_markup=create_main_menu_inline(user_id))
+    except Exception as e:
+        logger.error(f"Error during speed test: {e}")
+        bot.answer_callback_query(call.id, "Error in speed test.", show_alert=True)
+
+@bot.callback_query_handler(func=lambda call: call.data == 'stats')
+def stats_callback(call):
+    bot.answer_callback_query(call.id)
+    _logic_statistics(call.message)
+
+@bot.callback_query_handler(func=lambda call: call.data == 'back_to_main')
+def back_to_main_callback(call):
+    user_id = call.from_user.id
+    file_limit = get_user_file_limit(user_id)
+    current_files = get_user_file_count(user_id)
+    limit_str = str(file_limit) if file_limit != float('inf') else "Unlimited"
+    if user_id == OWNER_ID:
+        user_status = "👑 Owner"
+    elif user_id in admin_ids:
+        user_status = "🛡️ Admin"
+    elif is_user_subscribed(user_id):
+        expiry_date = user_subscriptions[user_id].get('expiry')
+        days_left = (expiry_date - datetime.now()).days
+        user_status = f"⭐ Premium (Expires in {days_left} days)"
+    else:
+        user_status = "🆓 Free User"
+    main_menu_text = (f"〽️ Welcome back, {call.from_user.first_name}!\n\n🆔 ID: `{user_id}`\n"
+                      f"🔰 Status: {user_status}\n📁 Files: {current_files} / {limit_str}\n\n"
+                      f"👇 Use buttons or type commands.")
+    bot.answer_callback_query(call.id)
+    bot.edit_message_text(main_menu_text, call.message.chat.id, call.message.message_id,
+                          reply_markup=create_main_menu_inline(user_id), parse_mode='Markdown')
+
+@bot.callback_query_handler(func=lambda call: call.data == 'submit_problem')
+def submit_problem_callback(call):
+    if is_user_banned(call.from_user.id):
+        bot.answer_callback_query(call.id, "❌ You are banned from using this bot.", show_alert=True)
+        return
+
+    bot.answer_callback_query(call.id)
+    msg = bot.send_message(call.message.chat.id,
+                          "📝 Please describe your problem or issue.\n\n"
+                          "Type /cancel to abort.")
+    bot.register_next_step_handler(msg, process_problem_submission)
+
+@bot.callback_query_handler(func=lambda call: call.data == 'view_problems')
+def view_problems_callback(call):
+    if call.from_user.id not in admin_ids:
+        bot.answer_callback_query(call.id, "⚠️ Admin permissions required.", show_alert=True)
+        return
+
+    problems = get_pending_problems()
+
+    if not problems:
+        bot.answer_callback_query(call.id)
+        bot.send_message(call.message.chat.id, "📝 No pending problems found.")
+        return
+
+    bot.answer_callback_query(call.id)
+
+    for problem in problems[:5]:
+        problem_id, user_id, user_name, problem_text, created_at = problem
+        created_date = datetime.fromisoformat(created_at).strftime("%Y-%m-%d %H:%M")
+
+        markup = create_problems_menu(problem_id)
+
+        bot.send_message(call.message.chat.id,
+                        f"📝 Problem #{problem_id}\n"
+                        f"👤 User: {user_name} (`{user_id}`)\n"
+                        f"🕐 Date: {created_date}\n"
+                        f"📄 Issue:\n{problem_text[:300]}...",
+                        reply_markup=markup,
+                        parse_mode='Markdown')
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('resolve_'))
+def resolve_problem_callback(call):
+    if call.from_user.id not in admin_ids:
+        bot.answer_callback_query(call.id, "⚠️ Admin permissions required.", show_alert=True)
+        return
+
+    try:
+        problem_id = int(call.data.split('_')[1])
+        if update_problem_status(problem_id, 'resolved', call.from_user.id):
+            bot.answer_callback_query(call.id, "✅ Problem marked as resolved.")
+            bot.edit_message_text(f"✅ Problem #{problem_id} marked as resolved.",
+                                call.message.chat.id,
+                                call.message.message_id)
+        else:
+            bot.answer_callback_query(call.id, "❌ Failed to update problem status.")
+    except Exception as e:
+        logger.error(f"Error resolving problem: {e}")
+        bot.answer_callback_query(call.id, "❌ Error processing request.")
+
+@bot.callback_query_handler(func=lambda call: call.data == 'user_management')
+def user_management_callback(call):
+    if call.from_user.id not in admin_ids:
+        bot.answer_callback_query(call.id, "⚠️ Admin permissions required.", show_alert=True)
+        return
+
+    bot.answer_callback_query(call.id)
+    bot.edit_message_text("👥 User Management Panel\nSelect an action:",
+                         call.message.chat.id,
+                         call.message.message_id,
+                         reply_markup=create_user_management_menu())
+
+@bot.callback_query_handler(func=lambda call: call.data == 'view_user_files')
+def view_user_files_callback(call):
+    if call.from_user.id not in admin_ids:
+        bot.answer_callback_query(call.id, "⚠️ Admin permissions required.", show_alert=True)
+        return
+
+    bot.answer_callback_query(call.id)
+    msg = bot.send_message(call.message.chat.id,
+                          "👤 Enter User ID to view their files:\n"
+                          "/cancel to abort.")
+    bot.register_next_step_handler(msg, process_view_user_files)
+
+def process_view_user_files(message):
+    if message.text and message.text.lower() == '/cancel':
+        bot.reply_to(message, "Cancelled.")
+        return
+
+    try:
+        target_user_id = int(message.text.strip())
+        user_files_list = user_files.get(target_user_id, [])
+
+        if not user_files_list:
+            bot.reply_to(message, f"📂 User `{target_user_id}` has no files.")
+            return
+
+        # Count running bots
+        running_count = 0
+        for file_name, _ in user_files_list:
+            if is_bot_running(target_user_id, file_name):
+                running_count += 1
+
+        # Create message
+        response = (f"👤 User ID: `{target_user_id}`\n"
+                   f"📁 Total Files: {len(user_files_list)}\n"
+                   f"🟢 Running Bots: {running_count}\n\n"
+                   f"📂 Files:\n")
+
+        for i, (file_name, file_type) in enumerate(user_files_list[:20], 1):
+            status = "🟢 Running" if is_bot_running(target_user_id, file_name) else "🔴 Stopped"
+            response += f"{i}. `{file_name}` ({file_type}) - {status}\n"
+
+        if len(user_files_list) > 20:
+            response += f"\n... and {len(user_files_list) - 20} more files."
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🗑️ Delete All Files",
+                                            callback_data=f"delete_all_{target_user_id}"))
+        markup.add(types.InlineKeyboardButton("🔙 Back to User Management",
+                                            callback_data="user_management"))
+
+        bot.reply_to(message, response, reply_markup=markup, parse_mode='Markdown')
+
+    except ValueError:
+        bot.reply_to(message, "❌ Invalid User ID.")
+    except Exception as e:
+        logger.error(f"Error viewing user files: {e}")
+        bot.reply_to(message, "❌ Error viewing user files.")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('delete_all_'))
+def delete_all_files_callback(call):
+    if call.from_user.id not in admin_ids:
+        bot.answer_callback_query(call.id, "⚠️ Admin permissions required.", show_alert=True)
+        return
+
+    try:
+        target_user_id = int(call.data.split('_')[2])
+        user_files_list = user_files.get(target_user_id, [])
+
+        if not user_files_list:
+            bot.answer_callback_query(call.id, "User has no files.", show_alert=True)
+            return
+
+        # Confirm deletion
+        markup = types.InlineKeyboardMarkup()
+        markup.row(
+            types.InlineKeyboardButton("✅ Confirm Delete",
+                                     callback_data=f"confirm_delete_all_{target_user_id}"),
+            types.InlineKeyboardButton("❌ Cancel",
+                                     callback_data=f"cancel_delete_{target_user_id}")
+        )
+
+        bot.answer_callback_query(call.id)
+        bot.edit_message_text(f"⚠️ Delete ALL files for user `{target_user_id}`?\n"
+                             f"This will delete {len(user_files_list)} files.",
+                             call.message.chat.id,
+                             call.message.message_id,
+                             reply_markup=markup,
+                             parse_mode='Markdown')
+
+    except Exception as e:
+        logger.error(f"Error in delete_all_files_callback: {e}")
+        bot.answer_callback_query(call.id, "❌ Error processing request.")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('confirm_delete_all_'))
+def confirm_delete_all_callback(call):
+    try:
+        target_user_id = int(call.data.split('_')[3])
+
+        # Stop all running bots
+        deleted_count = 0
+        for file_name, _ in user_files.get(target_user_id, []):
+            script_key = f"{target_user_id}_{file_name}"
+            if script_key in bot_scripts:
+                kill_process_tree(bot_scripts[script_key])
+                del bot_scripts[script_key]
+
+            # Remove file from disk
+            user_folder = get_user_folder(target_user_id)
+            file_path = os.path.join(user_folder, file_name)
+            log_path = os.path.join(user_folder, f"{os.path.splitext(file_name)[0]}.log")
+
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                if os.path.exists(log_path):
+                    os.remove(log_path)
+                deleted_count += 1
+            except:
+                pass
+
+        # Remove from database
+        remove_all_user_files_db(target_user_id)
+
+        bot.answer_callback_query(call.id, f"✅ Deleted {deleted_count} files.")
+        bot.edit_message_text(f"✅ Deleted all files for user `{target_user_id}`\n"
+                             f"Removed {deleted_count} files.",
+                             call.message.chat.id,
+                             call.message.message_id)
+
+    except Exception as e:
+        logger.error(f"Error confirming delete all: {e}")
+        bot.answer_callback_query(call.id, "❌ Error deleting files.")
+
+@bot.callback_query_handler(func=lambda call: call.data == 'ban_user')
+def ban_user_callback(call):
+    if call.from_user.id not in admin_ids:
+        bot.answer_callback_query(call.id, "⚠️ Admin permissions required.", show_alert=True)
+        return
+
+    bot.answer_callback_query(call.id)
+    msg = bot.send_message(call.message.chat.id,
+                          "🚫 Enter User ID to ban:\n"
+                          "Format: `ID reason`\n"
+                          "Example: `12345678 Spamming`\n\n"
+                          "/cancel to abort.",
+                          parse_mode='Markdown')
+    bot.register_next_step_handler(msg, process_ban_user)
+
+def process_ban_user(message):
+    if message.text and message.text.lower() == '/cancel':
+        bot.reply_to(message, "Ban cancelled.")
+        return
+
+    try:
+        parts = message.text.split(maxsplit=1)
+        if len(parts) < 2:
+            bot.reply_to(message, "❌ Format: `ID reason`")
+            return
+
+        user_id = int(parts[0].strip())
+        reason = parts[1].strip()
+
+        if user_id in admin_ids:
+            bot.reply_to(message, "❌ Cannot ban admins.")
+            return
+
+        if ban_user(user_id, reason, message.from_user.id):
+            bot.reply_to(message, f"✅ User `{user_id}` banned.\nReason: {reason}")
+        else:
+            bot.reply_to(message, "❌ Failed to ban user.")
+
+    except ValueError:
+        bot.reply_to(message, "❌ Invalid User ID.")
+    except Exception as e:
+        logger.error(f"Error banning user: {e}")
+        bot.reply_to(message, "❌ Error banning user.")
+
+@bot.callback_query_handler(func=lambda call: call.data == 'unban_user')
+def unban_user_callback(call):
+    if call.from_user.id not in admin_ids:
+        bot.answer_callback_query(call.id, "⚠️ Admin permissions required.", show_alert=True)
+        return
+
+    bot.answer_callback_query(call.id)
+    msg = bot.send_message(call.message.chat.id,
+                          "✅ Enter User ID to unban:\n"
+                          "/cancel to abort.")
+    bot.register_next_step_handler(msg, process_unban_user)
+
+def process_unban_user(message):
+    if message.text and message.text.lower() == '/cancel':
+        bot.reply_to(message, "Unban cancelled.")
+        return
+
+    try:
+        user_id = int(message.text.strip())
+
+        if unban_user(user_id):
+            bot.reply_to(message, f"✅ User `{user_id}` unbanned.")
+        else:
+            bot.reply_to(message, f"❌ User `{user_id}` is not banned.")
+
+    except ValueError:
+        bot.reply_to(message, "❌ Invalid User ID.")
+    except Exception as e:
+        logger.error(f"Error unbanning user: {e}")
+        bot.reply_to(message, "❌ Error unbanning user.")
+
+@bot.callback_query_handler(func=lambda call: call.data == 'list_banned_users')
+def list_banned_users_callback(call):
+    if call.from_user.id not in admin_ids:
+        bot.answer_callback_query(call.id, "⚠️ Admin permissions required.", show_alert=True)
+        return
+
+    if not banned_users:
+        bot.answer_callback_query(call.id)
+        bot.send_message(call.message.chat.id, "📋 No banned users found.")
+        return
+
+    response = "🚫 Banned Users:\n\n"
+    for user_id in list(banned_users)[:50]:
+        reason = get_ban_reason(user_id)
+        response += f"• `{user_id}` - {reason[:50]}...\n"
+
+    if len(banned_users) > 50:
+        response += f"\n... and {len(banned_users) - 50} more banned users."
+
+    bot.answer_callback_query(call.id)
+    bot.send_message(call.message.chat.id, response, parse_mode='Markdown')
+
+# --- Payment Settings Callbacks ---
+@bot.callback_query_handler(func=lambda call: call.data == 'payment_settings')
+def payment_settings_callback(call):
+    if call.from_user.id not in admin_ids:
+        bot.answer_callback_query(call.id, "⚠️ Admin permissions required.", show_alert=True)
+        return
+
+    bot.answer_callback_query(call.id)
+    bot.edit_message_text("💰 Payment Settings\nConfigure payment options:",
+                         call.message.chat.id,
+                         call.message.message_id,
+                         reply_markup=create_payment_settings_menu())
+
+@bot.callback_query_handler(func=lambda call: call.data == 'edit_upi_id')
+def edit_upi_id_callback(call):
+    if call.from_user.id not in admin_ids:
+        bot.answer_callback_query(call.id, "⚠️ Admin permissions required.", show_alert=True)
+        return
+
+    bot.answer_callback_query(call.id)
+    msg = bot.send_message(call.message.chat.id,
+                          "✏️ Enter new UPI ID:\n"
+                          "Example: `yourname@upi`\n\n"
+                          "/cancel to abort.",
+                          parse_mode='Markdown')
+    bot.register_next_step_handler(msg, process_edit_upi_id)
+
+def process_edit_upi_id(message):
+    if message.text and message.text.lower() == '/cancel':
+        bot.reply_to(message, "Cancelled.")
+        return
+
+    new_upi_id = message.text.strip()
+
+    if '@' not in new_upi_id:
+        bot.reply_to(message, "❌ Invalid UPI ID format. Should contain @")
+        return
+
+    payment_config['upi_id'] = new_upi_id
+    if save_payment_config(payment_config):
+        bot.reply_to(message, f"✅ UPI ID updated to: `{new_upi_id}`", parse_mode='Markdown')
+    else:
+        bot.reply_to(message, "❌ Failed to save UPI ID.")
+
+@bot.callback_query_handler(func=lambda call: call.data == 'edit_prices')
+def edit_prices_callback(call):
+    if call.from_user.id not in admin_ids:
+        bot.answer_callback_query(call.id, "⚠️ Admin permissions required.", show_alert=True)
+        return
+
+    bot.answer_callback_query(call.id)
+
+    current_prices = (f"Current Prices:\n"
+                     f"• 30 Days: ₹{payment_config.get('subscription_price_30_days', 299)}\n"
+                     f"• 90 Days: ₹{payment_config.get('subscription_price_90_days', 799)}\n"
+                     f"• 180 Days: ₹{payment_config.get('subscription_price_180_days', 1499)}\n\n"
+                     f"Enter new prices in format:\n"
+                     f"`30 299 90 799 180 1499`\n\n"
+                     f"/cancel to abort.")
+
+    msg = bot.send_message(call.message.chat.id, current_prices, parse_mode='Markdown')
+    bot.register_next_step_handler(msg, process_edit_prices)
+
+def process_edit_prices(message):
+    if message.text and message.text.lower() == '/cancel':
+        bot.reply_to(message, "Cancelled.")
+        return
+
+    try:
+        parts = message.text.strip().split()
+        if len(parts) != 6:
+            bot.reply_to(message, "❌ Invalid format. Need 6 values.")
+            return
+
+        # Parse prices
+        prices = {}
+        for i in range(0, 6, 2):
+            days = parts[i]
+            price = int(parts[i+1])
+
+            if days == '30':
+                prices['subscription_price_30_days'] = price
+            elif days == '90':
+                prices['subscription_price_90_days'] = price
+            elif days == '180':
+                prices['subscription_price_180_days'] = price
+
+        # Update config
+        payment_config.update(prices)
+        if save_payment_config(payment_config):
+            bot.reply_to(message, f"✅ Prices updated:\n"
+                                 f"• 30 Days: ₹{payment_config.get('subscription_price_30_days', 299)}\n"
+                                 f"• 90 Days: ₹{payment_config.get('subscription_price_90_days', 799)}\n"
+                                 f"• 180 Days: ₹{payment_config.get('subscription_price_180_days', 1499)}")
+        else:
+            bot.reply_to(message, "❌ Failed to save prices.")
+
+    except ValueError:
+        bot.reply_to(message, "❌ Invalid price values. Use numbers only.")
+    except Exception as e:
+        logger.error(f"Error updating prices: {e}")
+        bot.reply_to(message, "❌ Error updating prices.")
+
+@bot.callback_query_handler(func=lambda call: call.data == 'admin_generate_qr')
+def admin_generate_qr_callback(call):
+    upi_id = payment_config.get('upi_id', 'yourupi@bank')
+    qr_bytes = generate_payment_qr(upi_id)
+
+    if qr_bytes:
+        bot.answer_callback_query(call.id)
+        bot.send_photo(call.message.chat.id,
+                      qr_bytes,
+                      caption=f"📱 Payment QR Preview\n"
+                             f"UPI ID: `{upi_id}`",
+                      parse_mode='Markdown')
+    else:
+        bot.answer_callback_query(call.id, "❌ Failed to generate QR code.", show_alert=True)
+
+def generate_payment_qr(upi_id, amount=None):
+    """Generate QR code for UPI payment"""
+    try:
+        # Create UPI payment string
+        if amount:
+            upi_string = f"upi://pay?pa={upi_id}&pn=Bot%20Subscription&am={amount}&cu=INR&tn=Bot%20Subscription%20Payment"
+        else:
+            upi_string = f"upi://pay?pa={upi_id}&pn=Bot%20Subscription&cu=INR&tn=Bot%20Subscription%20Payment"
+
+        # Generate QR code
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=10,
+            border=4,
+        )
+        qr.add_data(upi_string)
+        qr.make(fit=True)
+
+        # Create QR code image
+        qr_img = qr.make_image(fill_color="black", back_color="white")
+
+        # Add text below QR
+        img_width, img_height = qr_img.size
+        new_height = img_height + 50
+        new_img = Image.new('RGB', (img_width, new_height), 'white')
+        new_img.paste(qr_img, (0, 0))
+
+        draw = ImageDraw.Draw(new_img)
+        try:
+            font = ImageFont.truetype("arial.ttf", 16)
+        except:
+            font = ImageFont.load_default()
+
+        # Add UPI ID text
+        text = f"UPI ID: {upi_id}"
+        text_width = draw.textlength(text, font=font)
+        draw.text(((img_width - text_width) // 2, img_height + 10),
+                 text, fill="black", font=font)
+
+        if amount:
+            amount_text = f"Amount: ₹{amount}"
+            amount_width = draw.textlength(amount_text, font=font)
+            draw.text(((img_width - amount_width) // 2, img_height + 30),
+                     amount_text, fill="black", font=font)
+
+        # Convert to bytes
+        img_byte_arr = io.BytesIO()
+        new_img.save(img_byte_arr, format='PNG')
+        img_byte_arr.seek(0)
+
+        return img_byte_arr
+    except Exception as e:
+        logger.error(f"Error generating QR code: {e}")
+        return None
+
+@bot.callback_query_handler(func=lambda call: call.data == 'view_payment_config')
+def view_payment_config_callback(call):
+    if call.from_user.id not in admin_ids:
+        bot.answer_callback_query(call.id, "⚠️ Admin permissions required.", show_alert=True)
+        return
+
+    config_text = (f"💰 Payment Configuration\n\n"
+                   f"📱 UPI ID: `{payment_config.get('upi_id', 'Not set')}`\n"
+                   f"🔄 QR Enabled: {payment_config.get('qr_code_enabled', True)}\n\n"
+                   f"💵 Prices:\n"
+                   f"• 30 Days: ₹{payment_config.get('subscription_price_30_days', 299)}\n"
+                   f"• 90 Days: ₹{payment_config.get('subscription_price_90_days', 799)}\n"
+                   f"• 180 Days: ₹{payment_config.get('subscription_price_180_days', 1499)}")
+
+    bot.answer_callback_query(call.id)
+    bot.send_message(call.message.chat.id, config_text, parse_mode='Markdown')
+
+@bot.callback_query_handler(func=lambda call: call.data == 'edit_links')
+def edit_links_callback(call):
+    if call.from_user.id not in admin_ids:
+        bot.answer_callback_query(call.id, "⚠️ Admin permissions required.", show_alert=True)
+        return
+
+    bot.answer_callback_query(call.id)
+    bot.edit_message_text("🔗 Edit Inline Button Links\nSelect link to edit:",
+                         call.message.chat.id,
+                         call.message.message_id,
+                         reply_markup=create_edit_links_menu())
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('edit_link_'))
+def edit_specific_link_callback(call):
+    if call.from_user.id not in admin_ids:
+        bot.answer_callback_query(call.id, "⚠️ Admin permissions required.", show_alert=True)
+        return
+
+    link_type = call.data.replace('edit_link_', '')
+    link_names = {
+        'updates': 'Updates Channel',
+        'support': 'Support Group',
+        'tutorial': 'Tutorial Channel',
+        'github': 'GitHub Repository',
+        'donation': 'Donation Link'
+    }
+
+    if link_type in link_names:
+        current_link = inline_links.get(f'{link_type}_channel' if link_type == 'updates' else f'{link_type}_group' if link_type == 'support' else f'{link_type}_{"channel" if link_type == "tutorial" else "repo" if link_type == "github" else "link"}', 'Not set')
+
+        bot.answer_callback_query(call.id)
+        msg = bot.send_message(call.message.chat.id,
+                              f"✏️ Edit {link_names[link_type]}\n"
+                              f"Current: {current_link}\n\n"
+                              f"Enter new URL:\n"
+                              f"/cancel to abort.")
+        bot.register_next_step_handler(msg, process_edit_link, link_type)
+
+def process_edit_link(message, link_type):
+    if message.text and message.text.lower() == '/cancel':
+        bot.reply_to(message, "Cancelled.")
+        return
+
+    new_url = message.text.strip()
+
+    if not new_url.startswith(('http://', 'https://', 't.me/')):
+        bot.reply_to(message, "❌ Invalid URL format. Should start with http://, https://, or t.me/")
+        return
+
+    key_map = {
+        'updates': 'updates_channel',
+        'support': 'support_group',
+        'tutorial': 'tutorial_channel',
+        'github': 'github_repo',
+        'donation': 'donation_link'
+    }
+
+    if link_type in key_map:
+        inline_links[key_map[link_type]] = new_url
+        if save_inline_links(inline_links):
+            bot.reply_to(message, f"✅ Link updated to: {new_url}")
+        else:
+            bot.reply_to(message, "❌ Failed to save link.")
+    else:
+        bot.reply_to(message, "❌ Invalid link type.")
+
+@bot.callback_query_handler(func=lambda call: call.data == 'view_links')
+def view_links_callback(call):
+    if call.from_user.id not in admin_ids:
+        bot.answer_callback_query(call.id, "⚠️ Admin permissions required.", show_alert=True)
+        return
+
+    links_text = "🔗 Current Inline Button Links:\n\n"
+    for key, value in inline_links.items():
+        links_text += f"• {key.replace('_', ' ').title()}: {value}\n"
+
+    bot.answer_callback_query(call.id)
+    bot.send_message(call.message.chat.id, links_text)
+
+@bot.callback_query_handler(func=lambda call: call.data == 'lock_bot')
+def lock_bot_callback(call):
+    if call.from_user.id not in admin_ids:
+        bot.answer_callback_query(call.id, "⚠️ Admin permissions required.", show_alert=True)
+        return
+    global bot_locked
+    bot_locked = True
+    bot.answer_callback_query(call.id, "🔒 Bot locked.")
+    bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id,
+                                  reply_markup=create_main_menu_inline(call.from_user.id))
+
+@bot.callback_query_handler(func=lambda call: call.data == 'unlock_bot')
+def unlock_bot_callback(call):
+    if call.from_user.id not in admin_ids:
+        bot.answer_callback_query(call.id, "⚠️ Admin permissions required.", show_alert=True)
+        return
+    global bot_locked
+    bot_locked = False
+    bot.answer_callback_query(call.id, "🔓 Bot unlocked.")
+    bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id,
+                                  reply_markup=create_main_menu_inline(call.from_user.id))
+
+@bot.callback_query_handler(func=lambda call: call.data == 'run_all_scripts')
+def run_all_scripts_callback(call):
+    _logic_run_all_scripts(call)
+
+@bot.callback_query_handler(func=lambda call: call.data == 'broadcast')
+def broadcast_init_callback(call):
+    if call.from_user.id not in admin_ids:
+        bot.answer_callback_query(call.id, "⚠️ Admin permissions required.", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    msg = bot.send_message(call.message.chat.id, "📢 Send message to broadcast.\n/cancel to abort.")
+    bot.register_next_step_handler(msg, process_broadcast_message)
+
+def process_broadcast_message(message):
+    user_id = message.from_user.id
+    if user_id not in admin_ids:
+        bot.reply_to(message, "⚠️ Not authorized.")
+        return
+    if message.text and message.text.lower() == '/cancel':
+        bot.reply_to(message, "Broadcast cancelled.")
+        return
+
+    broadcast_content = message.text
+    if not broadcast_content:
+        bot.reply_to(message, "⚠️ Cannot broadcast empty message.")
+        return
+
+    target_count = len(active_users)
+    markup = types.InlineKeyboardMarkup()
+    markup.row(
+        types.InlineKeyboardButton("✅ Confirm & Send", callback_data=f"confirm_broadcast_{message.message_id}"),
+        types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_broadcast")
+    )
+
+    preview_text = broadcast_content[:1000].strip()
+    bot.reply_to(message, f"⚠️ Confirm Broadcast:\n\n```\n{preview_text}\n```\n"
+                          f"To **{target_count}** users. Sure?", reply_markup=markup, parse_mode='Markdown')
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('confirm_broadcast_'))
+def handle_confirm_broadcast(call):
+    user_id = call.from_user.id
+    chat_id = call.message.chat.id
+    if user_id not in admin_ids:
+        bot.answer_callback_query(call.id, "⚠️ Admin only.", show_alert=True)
+        return
+    try:
+        original_message = call.message.reply_to_message
+        if not original_message:
+            raise ValueError("Could not retrieve original message.")
+
+        broadcast_text = original_message.text
+        bot.answer_callback_query(call.id, "🚀 Starting broadcast...")
+        bot.edit_message_text(f"📢 Broadcasting to {len(active_users)} users...",
+                              chat_id, call.message.message_id, reply_markup=None)
+
+        def execute_broadcast():
+            sent_count = 0
+            failed_count = 0
+            for user_id_bc in active_users:
+                try:
+                    bot.send_message(user_id_bc, broadcast_text, parse_mode='Markdown')
+                    sent_count += 1
+                except:
+                    failed_count += 1
+                time.sleep(0.1)
+
+            result_msg = (f"📢 Broadcast Complete!\n\n✅ Sent: {sent_count}\n"
+                          f"❌ Failed: {failed_count}\n👥 Targets: {len(active_users)}")
+            bot.send_message(chat_id, result_msg)
+
+        threading.Thread(target=execute_broadcast).start()
+    except Exception as e:
+        logger.error(f"Error in broadcast: {e}")
+        bot.edit_message_text("❌ Error during broadcast.", chat_id, call.message.message_id)
+
+@bot.callback_query_handler(func=lambda call: call.data == 'cancel_broadcast')
+def handle_cancel_broadcast(call):
+    bot.answer_callback_query(call.id, "Broadcast cancelled.")
+    bot.delete_message(call.message.chat.id, call.message.message_id)
+
+@bot.callback_query_handler(func=lambda call: call.data == 'admin_panel')
+def admin_panel_callback(call):
+    if call.from_user.id not in admin_ids:
+        bot.answer_callback_query(call.id, "⚠️ Admin permissions required.", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    bot.edit_message_text("👑 Admin Panel\nManage admins:",
+                         call.message.chat.id, call.message.message_id,
+                         reply_markup=create_admin_panel())
+
+@bot.callback_query_handler(func=lambda call: call.data == 'add_admin')
+def add_admin_init_callback(call):
+    if call.from_user.id != OWNER_ID:
+        bot.answer_callback_query(call.id, "⚠️ Owner permissions required.", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    msg = bot.send_message(call.message.chat.id, "👑 Enter User ID to promote to Admin.\n/cancel to abort.")
+    bot.register_next_step_handler(msg, process_add_admin_id)
+
+def process_add_admin_id(message):
+    if message.from_user.id != OWNER_ID:
+        bot.reply_to(message, "⚠️ Owner only.")
+        return
+    if message.text.lower() == '/cancel':
+        bot.reply_to(message, "Admin promotion cancelled.")
+        return
+    try:
+        new_admin_id = int(message.text.strip())
+        if new_admin_id <= 0:
+            raise ValueError("ID must be positive")
+        if new_admin_id == OWNER_ID:
+            bot.reply_to(message, "⚠️ Owner is already Owner.")
+            return
+        if new_admin_id in admin_ids:
+            bot.reply_to(message, f"⚠️ User `{new_admin_id}` already Admin.")
+            return
+        add_admin_db(new_admin_id)
+        bot.reply_to(message, f"✅ User `{new_admin_id}` promoted to Admin.")
+    except ValueError:
+        bot.reply_to(message, "⚠️ Invalid ID. Send numerical ID or /cancel.")
+    except Exception as e:
+        logger.error(f"Error processing add admin: {e}")
+        bot.reply_to(message, "Error.")
+
+@bot.callback_query_handler(func=lambda call: call.data == 'remove_admin')
+def remove_admin_init_callback(call):
+    if call.from_user.id != OWNER_ID:
+        bot.answer_callback_query(call.id, "⚠️ Owner permissions required.", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    msg = bot.send_message(call.message.chat.id, "👑 Enter User ID of Admin to remove.\n/cancel to abort.")
+    bot.register_next_step_handler(msg, process_remove_admin_id)
+
+def process_remove_admin_id(message):
+    if message.from_user.id != OWNER_ID:
+        bot.reply_to(message, "⚠️ Owner only.")
+        return
+    if message.text.lower() == '/cancel':
+        bot.reply_to(message, "Admin removal cancelled.")
+        return
+    try:
+        admin_id_remove = int(message.text.strip())
+        if admin_id_remove <= 0:
+            raise ValueError("ID must be positive")
+        if admin_id_remove == OWNER_ID:
+            bot.reply_to(message, "⚠️ Owner cannot remove self.")
+            return
+        if remove_admin_db(admin_id_remove):
+            bot.reply_to(message, f"✅ Admin `{admin_id_remove}` removed.")
+        else:
+            bot.reply_to(message, f"❌ Failed to remove admin `{admin_id_remove}`.")
+    except ValueError:
+        bot.reply_to(message, "⚠️ Invalid ID. Send numerical ID or /cancel.")
+    except Exception as e:
+        logger.error(f"Error processing remove admin: {e}")
+        bot.reply_to(message, "Error.")
+
+@bot.callback_query_handler(func=lambda call: call.data == 'list_admins')
+def list_admins_callback(call):
+    if call.from_user.id not in admin_ids:
+        bot.answer_callback_query(call.id, "⚠️ Admin permissions required.", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    admin_list_str = "\n".join(f"- `{aid}` {'(Owner)' if aid == OWNER_ID else ''}" for aid in sorted(list(admin_ids)))
+    bot.edit_message_text(f"👑 Current Admins:\n\n{admin_list_str}",
+                         call.message.chat.id, call.message.message_id,
+                         reply_markup=create_admin_panel(), parse_mode='Markdown')
 
 # --- Cleanup Function ---
 def cleanup():
